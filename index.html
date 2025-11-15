@@ -11,7 +11,7 @@
             --danger-color: #e74c3c;
             --dark-color: #2c3e50;
             --light-color: #ecf0f1;
-            --player-colors: ['#3498db', '#e74c3c', '#f39c12', '#9b59b6', '#1abc9c', '#d35400'];
+            --neutral-color: #34495e;
         }
 
         * {
@@ -81,13 +81,31 @@
             overflow: hidden;
         }
 
-        #game-board {
+        #game-board-container {
             flex: 1;
             background-color: rgba(0, 0, 0, 0.2);
             border-radius: 10px;
             position: relative;
             overflow: hidden;
             box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+        }
+
+        #game-board {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform-origin: 0 0;
+            transition: transform 0.1s;
+        }
+
+        .territory-cell {
+            position: absolute;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            transition: background-color 0.3s;
+        }
+
+        .territory-cell.player {
+            border: 1px solid rgba(255, 255, 255, 0.5);
         }
 
         #sidebar {
@@ -179,16 +197,6 @@
             font-weight: bold;
         }
 
-        .territory-cell {
-            position: absolute;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: background-color 0.3s;
-        }
-
-        .territory-cell.player {
-            border: 1px solid rgba(255, 255, 255, 0.5);
-        }
-
         #controls {
             display: flex;
             gap: 10px;
@@ -246,6 +254,7 @@
             text-align: center;
             opacity: 0;
             transition: opacity 0.3s;
+            z-index: 10;
         }
 
         .modal {
@@ -304,6 +313,34 @@
             transition: width 0.3s;
         }
 
+        .zoom-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            z-index: 10;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: rgba(44, 62, 80, 0.8);
+            border-radius: 6px;
+            font-size: 1.5rem;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .stat-item {
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
         @media (max-width: 768px) {
             #main-content {
                 flex-direction: column;
@@ -343,7 +380,13 @@
         </header>
 
         <div id="main-content">
-            <div id="game-board"></div>
+            <div id="game-board-container">
+                <div id="game-board"></div>
+                <div class="zoom-controls">
+                    <div class="zoom-btn" id="zoom-in">+</div>
+                    <div class="zoom-btn" id="zoom-out">-</div>
+                </div>
+            </div>
             
             <div id="sidebar">
                 <div class="panel">
@@ -416,6 +459,7 @@
             <p>Conquérez des territoires en cliquant dessus. Chaque territoire vous rapporte de la puissance.</p>
             <p>Utilisez votre puissance pour améliorer vos capacités et conquérir plus de territoires.</p>
             <p>Devenez le joueur dominant en contrôlant la majorité de la carte !</p>
+            <p><strong>Contrôles :</strong> Clic pour attaquer, Molette pour zoomer, Clic-droit pour déplacer la carte</p>
             <button id="start-btn" class="secondary" style="margin-top: 20px;">COMMENCER LA PARTIE</button>
         </div>
     </div>
@@ -443,8 +487,8 @@
     <script>
         // Configuration du jeu
         const CONFIG = {
-            BOARD_SIZE: 20, // Taille de la grille (20x20)
-            CELL_SIZE: 30, // Taille d'une cellule en pixels
+            BOARD_SIZE: 80, // Grande carte 80x80
+            CELL_SIZE: 20, // Taille d'une cellule en pixels
             INITIAL_POWER: 100,
             POWER_GAIN_RATE: 1, // Puissance gagnée par seconde
             BASE_ATTACK_COST: 10,
@@ -481,11 +525,18 @@
             gameTime: 0,
             territoriesCaptured: 0,
             totalAttacks: 0,
-            totalPowerGenerated: 0
+            totalPowerGenerated: 0,
+            zoom: 1,
+            offsetX: 0,
+            offsetY: 0,
+            isDragging: false,
+            lastMouseX: 0,
+            lastMouseY: 0
         };
 
         // Éléments DOM
         const elements = {
+            gameBoardContainer: document.getElementById('game-board-container'),
             gameBoard: document.getElementById('game-board'),
             territoriesCount: document.getElementById('territories-count'),
             powerCount: document.getElementById('power-count'),
@@ -509,7 +560,9 @@
             gameMessages: document.getElementById('game-messages'),
             finalTerritories: document.getElementById('final-territories'),
             finalTime: document.getElementById('final-time'),
-            gameResult: document.getElementById('game-result')
+            gameResult: document.getElementById('game-result'),
+            zoomIn: document.getElementById('zoom-in'),
+            zoomOut: document.getElementById('zoom-out')
         };
 
         // Initialisation des améliorations
@@ -591,6 +644,13 @@
                     cell.addEventListener('click', () => attackTerritory(territory));
                 }
             }
+            
+            updateBoardTransform();
+        }
+
+        // Mise à jour de la transformation de la carte (zoom/déplacement)
+        function updateBoardTransform() {
+            elements.gameBoard.style.transform = `translate(${gameState.offsetX}px, ${gameState.offsetY}px) scale(${gameState.zoom})`;
         }
 
         // Initialisation des joueurs IA
@@ -891,6 +951,61 @@
             });
         }
 
+        // Gestion du zoom
+        function setupZoomControls() {
+            elements.zoomIn.addEventListener('click', () => {
+                gameState.zoom = Math.min(gameState.zoom + 0.2, 3);
+                updateBoardTransform();
+            });
+            
+            elements.zoomOut.addEventListener('click', () => {
+                gameState.zoom = Math.max(gameState.zoom - 0.2, 0.5);
+                updateBoardTransform();
+            });
+            
+            // Zoom avec la molette de la souris
+            elements.gameBoardContainer.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+                gameState.zoom = Math.max(0.5, Math.min(3, gameState.zoom * zoomFactor));
+                updateBoardTransform();
+            });
+            
+            // Déplacement de la carte
+            elements.gameBoardContainer.addEventListener('mousedown', (e) => {
+                if (e.button === 2) { // Clic droit
+                    e.preventDefault();
+                    gameState.isDragging = true;
+                    gameState.lastMouseX = e.clientX;
+                    gameState.lastMouseY = e.clientY;
+                }
+            });
+            
+            document.addEventListener('mousemove', (e) => {
+                if (gameState.isDragging) {
+                    const deltaX = e.clientX - gameState.lastMouseX;
+                    const deltaY = e.clientY - gameState.lastMouseY;
+                    
+                    gameState.offsetX += deltaX;
+                    gameState.offsetY += deltaY;
+                    
+                    gameState.lastMouseX = e.clientX;
+                    gameState.lastMouseY = e.clientY;
+                    
+                    updateBoardTransform();
+                }
+            });
+            
+            document.addEventListener('mouseup', () => {
+                gameState.isDragging = false;
+            });
+            
+            // Empêcher le menu contextuel
+            elements.gameBoardContainer.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+            });
+        }
+
         // Boucle de jeu principale
         function gameLoop() {
             if (!gameState.running || gameState.paused) return;
@@ -922,6 +1037,9 @@
             gameState.territoriesCaptured = 0;
             gameState.totalAttacks = 0;
             gameState.totalPowerGenerated = 0;
+            gameState.zoom = 1;
+            gameState.offsetX = 0;
+            gameState.offsetY = 0;
             
             // Réinitialiser le joueur
             gameState.player.power = CONFIG.INITIAL_POWER;
@@ -976,7 +1094,7 @@
             });
             
             elements.helpBtn.addEventListener('click', () => {
-                alert("TERRITORIAL CONQUEST\n\n- Cliquez sur les territoires adjacents pour les conquérir\n- Chaque territoire vous rapporte de la puissance\n- Utilisez votre puissance pour acheter des améliorations\n- Conquérez plus de 70% de la carte pour gagner !");
+                alert("TERRITORIAL CONQUEST\n\n- Cliquez sur les territoires adjacents pour les conquérir\n- Chaque territoire vous rapporte de la puissance\n- Utilisez votre puissance pour acheter des améliorations\n- Conquérez plus de 70% de la carte pour gagner !\n\nContrôles :\n- Clic gauche : Attaquer un territoire\n- Molette : Zoomer\n- Clic droit + glisser : Déplacer la carte");
             });
             
             // Boutons des modales
@@ -1003,6 +1121,7 @@
         // Initialisation du jeu
         function init() {
             setupEventListeners();
+            setupZoomControls();
             initUpgrades();
             initGameBoard();
             updateLeaderboard();
