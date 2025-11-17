@@ -1,1134 +1,710 @@
-<!DOCTYPE html>
-<html lang="fr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Territorial Conquest</title>
-    <style>
-        :root {
-            --primary-color: #3498db;
-            --secondary-color: #2ecc71;
-            --danger-color: #e74c3c;
-            --dark-color: #2c3e50;
-            --light-color: #ecf0f1;
-            --neutral-color: #34495e;
-        }
+// NEXUS_ROBOTICS_ULTIMATE.cpp - Jeu de stratégie robotique complet
+#include <iostream>
+#include <vector>
+#include <memory>
+#include <unordered_map>
+#include <queue>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <random>
+#include <algorithm>
+#include <cmath>
+#include <string>
+#include <sstream>
+#include <iomanip>
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
+using namespace std;
+using namespace std::chrono;
 
-        body {
-            background: linear-gradient(135deg, #1a2a6c, #2c3e50);
-            color: var(--light-color);
-            overflow: hidden;
-            height: 100vh;
-        }
+// === CONFIGURATION AVANCÉE ===
+struct GameConfig {
+    int screenWidth = 1920;
+    int screenHeight = 1080;
+    bool fullscreen = false;
+    int maxFPS = 60;
+    string language = "fr";
+    float musicVolume = 0.8f;
+    float effectsVolume = 1.0f;
+    bool vsync = true;
+};
 
-        #game-container {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            padding: 10px;
-        }
+// === VECTEUR 3D AVEC FONCTIONS MATHÉMATIQUES ===
+struct Vector3 {
+    float x, y, z;
+    
+    Vector3(float x = 0, float y = 0, float z = 0) : x(x), y(y), z(z) {}
+    
+    // Opérateurs mathématiques
+    Vector3 operator+(const Vector3& other) const { return Vector3(x + other.x, y + other.y, z + other.z); }
+    Vector3 operator-(const Vector3& other) const { return Vector3(x - other.x, y - other.y, z - other.z); }
+    Vector3 operator*(float scalar) const { return Vector3(x * scalar, y * scalar, z * scalar); }
+    Vector3 operator/(float scalar) const { return scalar != 0 ? Vector3(x/scalar, y/scalar, z/scalar) : Vector3(); }
+    
+    // Produit scalaire et vectoriel
+    float Dot(const Vector3& other) const { return x*other.x + y*other.y + z*other.z; }
+    Vector3 Cross(const Vector3& other) const { 
+        return Vector3(y*other.z - z*other.y, z*other.x - x*other.z, x*other.y - y*other.x); 
+    }
+    
+    // Normalisation et longueur
+    float Length() const { return sqrtf(x*x + y*y + z*z); }
+    float LengthSquared() const { return x*x + y*y + z*z; }
+    Vector3 Normalized() const { 
+        float len = Length(); 
+        return len > 0.0001f ? Vector3(x/len, y/len, z/len) : Vector3(0,1,0); 
+    }
+    
+    // Distance entre deux points
+    float Distance(const Vector3& other) const { return (*this - other).Length(); }
+    
+    // Interpolation linéaire
+    static Vector3 Lerp(const Vector3& a, const Vector3& b, float t) {
+        return a + (b - a) * t;
+    }
+    
+    string ToString() const {
+        stringstream ss;
+        ss << fixed << setprecision(2) << "(" << x << ", " << y << ", " << z << ")";
+        return ss.str();
+    }
+};
 
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 20px;
-            background-color: rgba(44, 62, 80, 0.8);
-            border-radius: 10px;
-            margin-bottom: 10px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
+// === RESSOURCES AVANCÉES ===
+enum ResourceType {
+    RESOURCE_ENERGY = 0,
+    RESOURCE_METAL,
+    RESOURCE_CRYSTAL, 
+    RESOURCE_DATA,
+    RESOURCE_FOOD,
+    RESOURCE_COUNT
+};
 
-        .logo {
-            font-size: 1.8rem;
-            font-weight: bold;
-            color: var(--secondary-color);
+struct ResourceBundle {
+    int resources[RESOURCE_COUNT] = {0};
+    
+    ResourceBundle(int energy = 0, int metal = 0, int crystal = 0, int data = 0, int food = 0) {
+        resources[RESOURCE_ENERGY] = energy;
+        resources[RESOURCE_METAL] = metal;
+        resources[RESOURCE_CRYSTAL] = crystal;
+        resources[RESOURCE_DATA] = data;
+        resources[RESOURCE_FOOD] = food;
+    }
+    
+    int& operator[](ResourceType type) { return resources[type]; }
+    const int& operator[](ResourceType type) const { return resources[type]; }
+    
+    int& Energy() { return resources[RESOURCE_ENERGY]; }
+    int& Metal() { return resources[RESOURCE_METAL]; }
+    int& Crystal() { return resources[RESOURCE_CRYSTAL]; }
+    int& Data() { return resources[RESOURCE_DATA]; }
+    int& Food() { return resources[RESOURCE_FOOD]; }
+    
+    bool CanAfford(const ResourceBundle& cost) const {
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            if (resources[i] < cost.resources[i]) return false;
         }
-
-        .player-info {
-            display: flex;
-            gap: 20px;
+        return true;
+    }
+    
+    void operator-=(const ResourceBundle& other) {
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            resources[i] -= other.resources[i];
         }
-
-        .info-box {
-            background-color: rgba(52, 152, 219, 0.2);
-            padding: 8px 15px;
-            border-radius: 8px;
-            text-align: center;
+    }
+    
+    void operator+=(const ResourceBundle& other) {
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            resources[i] += other.resources[i];
         }
-
-        .info-label {
-            font-size: 0.8rem;
-            opacity: 0.8;
+    }
+    
+    ResourceBundle operator*(float multiplier) const {
+        ResourceBundle result;
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            result.resources[i] = static_cast<int>(resources[i] * multiplier);
         }
+        return result;
+    }
+    
+    string ToString() const {
+        stringstream ss;
+        ss << "E:" << resources[RESOURCE_ENERGY] << " M:" << resources[RESOURCE_METAL] 
+           << " C:" << resources[RESOURCE_CRYSTAL] << " D:" << resources[RESOURCE_DATA] 
+           << " F:" << resources[RESOURCE_FOOD];
+        return ss.str();
+    }
+};
 
-        .info-value {
-            font-size: 1.2rem;
-            font-weight: bold;
+// === COMPOSANTS DE ROBOT MODULAIRES ===
+class RobotComponent {
+protected:
+    string m_name;
+    float m_health = 100.0f;
+    float m_maxHealth = 100.0f;
+    bool m_isActive = true;
+    
+public:
+    RobotComponent(const string& name) : m_name(name) {}
+    virtual ~RobotComponent() = default;
+    
+    virtual void Update(float deltaTime) = 0;
+    virtual void OnDamage(float damage) { 
+        m_health = max(0.0f, m_health - damage); 
+        if (m_health <= 0) m_isActive = false;
+    }
+    virtual void Repair(float amount) { 
+        m_health = min(m_maxHealth, m_health + amount); 
+        if (m_health > 0) m_isActive = true;
+    }
+    
+    bool IsActive() const { return m_isActive && m_health > 0; }
+    float GetHealthPercent() const { return m_health / m_maxHealth; }
+    const string& GetName() const { return m_name; }
+};
+
+class WeaponSystem : public RobotComponent {
+private:
+    float m_damage;
+    float m_range;
+    float m_fireRate;
+    float m_cooldown = 0.0f;
+    
+public:
+    WeaponSystem(const string& name, float damage, float range, float fireRate) 
+        : RobotComponent(name), m_damage(damage), m_range(range), m_fireRate(fireRate) {}
+    
+    void Update(float deltaTime) override {
+        if (m_cooldown > 0) {
+            m_cooldown -= deltaTime;
         }
-
-        #main-content {
-            display: flex;
-            flex: 1;
-            gap: 10px;
-            overflow: hidden;
+    }
+    
+    bool CanFire() const { return m_cooldown <= 0 && IsActive(); }
+    
+    bool FireAtTarget(const Vector3& source, const Vector3& target) {
+        if (!CanFire()) return false;
+        
+        float distance = source.Distance(target);
+        if (distance <= m_range) {
+            m_cooldown = 1.0f / m_fireRate;
+            return true;
         }
+        return false;
+    }
+    
+    float GetDamage() const { return m_damage; }
+    float GetRange() const { return m_range; }
+};
 
-        #game-board-container {
-            flex: 1;
-            background-color: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-        }
-
-        #game-board {
-            position: absolute;
-            top: 0;
-            left: 0;
-            transform-origin: 0 0;
-            transition: transform 0.1s;
-        }
-
-        .territory-cell {
-            position: absolute;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            transition: background-color 0.3s;
-        }
-
-        .territory-cell.player {
-            border: 1px solid rgba(255, 255, 255, 0.5);
-        }
-
-        #sidebar {
-            width: 300px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .panel {
-            background-color: rgba(44, 62, 80, 0.8);
-            border-radius: 10px;
-            padding: 15px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .panel-title {
-            font-size: 1.2rem;
-            margin-bottom: 10px;
-            color: var(--secondary-color);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            padding-bottom: 5px;
-        }
-
-        .upgrade-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px;
-            margin-bottom: 8px;
-            background-color: rgba(52, 152, 219, 0.2);
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        .upgrade-item:hover {
-            background-color: rgba(52, 152, 219, 0.4);
-            transform: translateY(-2px);
-        }
-
-        .upgrade-item.disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .upgrade-item.disabled:hover {
-            background-color: rgba(52, 152, 219, 0.2);
-            transform: none;
-        }
-
-        .upgrade-cost {
-            background-color: var(--dark-color);
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 0.9rem;
-        }
-
-        .leaderboard-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px;
-            margin-bottom: 5px;
-            border-radius: 6px;
-        }
-
-        .leaderboard-item.player {
-            background-color: rgba(52, 152, 219, 0.3);
-        }
-
-        .leaderboard-rank {
-            width: 25px;
-            height: 25px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: var(--dark-color);
-            border-radius: 50%;
-            font-size: 0.8rem;
-        }
-
-        .leaderboard-name {
-            flex: 1;
-            margin-left: 10px;
-        }
-
-        .leaderboard-score {
-            font-weight: bold;
-        }
-
-        #controls {
-            display: flex;
-            gap: 10px;
-            padding: 10px 20px;
-            background-color: rgba(44, 62, 80, 0.8);
-            border-radius: 10px;
-            margin-top: 10px;
-        }
-
-        button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            background-color: var(--primary-color);
-            color: white;
-            font-weight: bold;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-
-        button:hover {
-            background-color: #2980b9;
-            transform: translateY(-2px);
-        }
-
-        button:active {
-            transform: translateY(0);
-        }
-
-        button.secondary {
-            background-color: var(--secondary-color);
-        }
-
-        button.secondary:hover {
-            background-color: #27ae60;
-        }
-
-        button.danger {
-            background-color: var(--danger-color);
-        }
-
-        button.danger:hover {
-            background-color: #c0392b;
-        }
-
-        #game-messages {
-            position: absolute;
-            bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background-color: rgba(0, 0, 0, 0.7);
-            padding: 10px 20px;
-            border-radius: 8px;
-            max-width: 80%;
-            text-align: center;
-            opacity: 0;
-            transition: opacity 0.3s;
-            z-index: 10;
-        }
-
-        .modal {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.8);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.3s;
-        }
-
-        .modal.active {
-            opacity: 1;
-            pointer-events: all;
-        }
-
-        .modal-content {
-            background: linear-gradient(135deg, #2c3e50, #1a2a6c);
-            padding: 30px;
-            border-radius: 15px;
-            max-width: 500px;
-            width: 90%;
-            text-align: center;
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
-        }
-
-        .modal h2 {
-            margin-bottom: 20px;
-            color: var(--secondary-color);
-        }
-
-        .modal p {
-            margin-bottom: 20px;
-            line-height: 1.5;
-        }
-
-        .progress-bar {
-            height: 10px;
-            background-color: rgba(255, 255, 255, 0.1);
-            border-radius: 5px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-
-        .progress-fill {
-            height: 100%;
-            background-color: var(--secondary-color);
-            width: 0%;
-            transition: width 0.3s;
-        }
-
-        .zoom-controls {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            z-index: 10;
-        }
-
-        .zoom-btn {
-            width: 40px;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background-color: rgba(44, 62, 80, 0.8);
-            border-radius: 6px;
-            font-size: 1.5rem;
-            cursor: pointer;
-            user-select: none;
-        }
-
-        .stat-item {
-            padding: 5px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        @media (max-width: 768px) {
-            #main-content {
-                flex-direction: column;
-            }
+class MovementSystem : public RobotComponent {
+private:
+    float m_speed;
+    float m_rotationSpeed;
+    Vector3 m_position;
+    Vector3 m_targetPosition;
+    Vector3 m_velocity;
+    bool m_isMoving = false;
+    
+public:
+    MovementSystem(const string& name, float speed, float rotationSpeed, const Vector3& startPos) 
+        : RobotComponent(name), m_speed(speed), m_rotationSpeed(rotationSpeed), m_position(startPos) {}
+    
+    void Update(float deltaTime) override {
+        if (!IsActive()) return;
+        
+        if (m_isMoving) {
+            Vector3 direction = (m_targetPosition - m_position).Normalized();
+            Vector3 desiredVelocity = direction * m_speed;
             
-            #sidebar {
-                width: 100%;
-                flex-direction: row;
-                flex-wrap: wrap;
-            }
+            m_velocity = Vector3::Lerp(m_velocity, desiredVelocity, deltaTime * 5.0f);
+            m_position = m_position + m_velocity * deltaTime;
             
-            .panel {
-                flex: 1;
-                min-width: 150px;
+            // Vérifier si on est arrivé
+            if (m_position.Distance(m_targetPosition) < 0.5f) {
+                m_isMoving = false;
+                m_velocity = Vector3(0,0,0);
             }
         }
-    </style>
-</head>
-<body>
-    <div id="game-container">
-        <header>
-            <div class="logo">TERRITORIAL CONQUEST</div>
-            <div class="player-info">
-                <div class="info-box">
-                    <div class="info-label">TERRITOIRES</div>
-                    <div class="info-value" id="territories-count">0</div>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">PUISSANCE</div>
-                    <div class="info-value" id="power-count">100</div>
-                </div>
-                <div class="info-box">
-                    <div class="info-label">RANG</div>
-                    <div class="info-value" id="rank">1</div>
-                </div>
-            </div>
-        </header>
+    }
+    
+    void MoveTo(const Vector3& target) {
+        if (!IsActive()) return;
+        m_targetPosition = target;
+        m_isMoving = true;
+    }
+    
+    void Stop() { 
+        m_isMoving = false; 
+        m_velocity = Vector3(0,0,0);
+    }
+    
+    const Vector3& GetPosition() const { return m_position; }
+    const Vector3& GetVelocity() const { return m_velocity; }
+    bool IsMoving() const { return m_isMoving; }
+};
 
-        <div id="main-content">
-            <div id="game-board-container">
-                <div id="game-board"></div>
-                <div class="zoom-controls">
-                    <div class="zoom-btn" id="zoom-in">+</div>
-                    <div class="zoom-btn" id="zoom-out">-</div>
-                </div>
-            </div>
-            
-            <div id="sidebar">
-                <div class="panel">
-                    <div class="panel-title">AMÉLIORATIONS</div>
-                    <div class="upgrade-item" id="upgrade-power">
-                        <div>
-                            <div>Puissance d'attaque</div>
-                            <div class="progress-bar"><div class="progress-fill" id="power-progress"></div></div>
-                        </div>
-                        <div class="upgrade-cost" id="power-cost">50</div>
-                    </div>
-                    <div class="upgrade-item" id="upgrade-defense">
-                        <div>
-                            <div>Défense des territoires</div>
-                            <div class="progress-bar"><div class="progress-fill" id="defense-progress"></div></div>
-                        </div>
-                        <div class="upgrade-cost" id="defense-cost">75</div>
-                    </div>
-                    <div class="upgrade-item" id="upgrade-production">
-                        <div>
-                            <div>Production de puissance</div>
-                            <div class="progress-bar"><div class="progress-fill" id="production-progress"></div></div>
-                        </div>
-                        <div class="upgrade-cost" id="production-cost">100</div>
-                    </div>
-                    <div class="upgrade-item" id="upgrade-range">
-                        <div>
-                            <div>Portée d'attaque</div>
-                            <div class="progress-bar"><div class="progress-fill" id="range-progress"></div></div>
-                        </div>
-                        <div class="upgrade-cost" id="range-cost">125</div>
-                    </div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-title">CLASSEMENT</div>
-                    <div id="leaderboard"></div>
-                </div>
-
-                <div class="panel">
-                    <div class="panel-title">STATISTIQUES</div>
-                    <div class="stat-item">
-                        <div>Temps de jeu: <span id="game-time">0:00</span></div>
-                    </div>
-                    <div class="stat-item">
-                        <div>Territoires capturés: <span id="territories-captured">0</span></div>
-                    </div>
-                    <div class="stat-item">
-                        <div>Total d'attaques: <span id="total-attacks">0</span></div>
-                    </div>
-                    <div class="stat-item">
-                        <div>Puissance générée: <span id="total-power">0</span></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div id="controls">
-            <button id="pause-btn">PAUSE</button>
-            <button id="restart-btn" class="secondary">RECOMMENCER</button>
-            <button id="help-btn" class="secondary">AIDE</button>
-        </div>
-    </div>
-
-    <div id="game-messages"></div>
-
-    <div id="start-modal" class="modal active">
-        <div class="modal-content">
-            <h2>TERRITORIAL CONQUEST</h2>
-            <p>Conquérez des territoires en cliquant dessus. Chaque territoire vous rapporte de la puissance.</p>
-            <p>Utilisez votre puissance pour améliorer vos capacités et conquérir plus de territoires.</p>
-            <p>Devenez le joueur dominant en contrôlant la majorité de la carte !</p>
-            <p><strong>Contrôles :</strong> Clic pour attaquer, Molette pour zoomer, Clic-droit pour déplacer la carte</p>
-            <button id="start-btn" class="secondary" style="margin-top: 20px;">COMMENCER LA PARTIE</button>
-        </div>
-    </div>
-
-    <div id="pause-modal" class="modal">
-        <div class="modal-content">
-            <h2>JEU EN PAUSE</h2>
-            <p>Le jeu est actuellement en pause.</p>
-            <button id="resume-btn" class="secondary">REPRENDRE</button>
-            <button id="menu-btn" style="margin-top: 10px;">MENU PRINCIPAL</button>
-        </div>
-    </div>
-
-    <div id="game-over-modal" class="modal">
-        <div class="modal-content">
-            <h2>PARTIE TERMINÉE</h2>
-            <p id="game-result">Vous avez perdu !</p>
-            <p>Territoires contrôlés: <span id="final-territories">0</span></p>
-            <p>Temps de jeu: <span id="final-time">0:00</span></p>
-            <button id="play-again-btn" class="secondary">REJOUER</button>
-            <button id="main-menu-btn" style="margin-top: 10px;">MENU PRINCIPAL</button>
-        </div>
-    </div>
-
-    <script>
-        // Configuration du jeu
-        const CONFIG = {
-            BOARD_SIZE: 80, // Grande carte 80x80
-            CELL_SIZE: 20, // Taille d'une cellule en pixels
-            INITIAL_POWER: 100,
-            POWER_GAIN_RATE: 1, // Puissance gagnée par seconde
-            BASE_ATTACK_COST: 10,
-            NEUTRAL_COLOR: '#34495e',
-            PLAYER_COLOR: '#3498db',
-            AI_COLORS: ['#e74c3c', '#f39c12', '#9b59b6', '#1abc9c', '#d35400', '#16a085'],
-            UPGRADE_COSTS: {
-                power: [50, 100, 200, 400, 800],
-                defense: [75, 150, 300, 600, 1200],
-                production: [100, 200, 400, 800, 1600],
-                range: [125, 250, 500, 1000, 2000]
-            }
-        };
-
-        // État du jeu
-        const gameState = {
-            running: false,
-            paused: false,
-            player: {
-                id: 0,
-                color: CONFIG.PLAYER_COLOR,
-                power: CONFIG.INITIAL_POWER,
-                territories: 0,
-                upgrades: {
-                    power: 0,
-                    defense: 0,
-                    production: 0,
-                    range: 0
-                }
-            },
-            aiPlayers: [],
-            territories: [],
-            selectedTerritory: null,
-            gameTime: 0,
-            territoriesCaptured: 0,
-            totalAttacks: 0,
-            totalPowerGenerated: 0,
-            zoom: 1,
-            offsetX: 0,
-            offsetY: 0,
-            isDragging: false,
-            lastMouseX: 0,
-            lastMouseY: 0
-        };
-
-        // Éléments DOM
-        const elements = {
-            gameBoardContainer: document.getElementById('game-board-container'),
-            gameBoard: document.getElementById('game-board'),
-            territoriesCount: document.getElementById('territories-count'),
-            powerCount: document.getElementById('power-count'),
-            rank: document.getElementById('rank'),
-            leaderboard: document.getElementById('leaderboard'),
-            gameTime: document.getElementById('game-time'),
-            territoriesCaptured: document.getElementById('territories-captured'),
-            totalAttacks: document.getElementById('total-attacks'),
-            totalPower: document.getElementById('total-power'),
-            pauseBtn: document.getElementById('pause-btn'),
-            restartBtn: document.getElementById('restart-btn'),
-            helpBtn: document.getElementById('help-btn'),
-            startModal: document.getElementById('start-modal'),
-            pauseModal: document.getElementById('pause-modal'),
-            gameOverModal: document.getElementById('game-over-modal'),
-            startBtn: document.getElementById('start-btn'),
-            resumeBtn: document.getElementById('resume-btn'),
-            menuBtn: document.getElementById('menu-btn'),
-            playAgainBtn: document.getElementById('play-again-btn'),
-            mainMenuBtn: document.getElementById('main-menu-btn'),
-            gameMessages: document.getElementById('game-messages'),
-            finalTerritories: document.getElementById('final-territories'),
-            finalTime: document.getElementById('final-time'),
-            gameResult: document.getElementById('game-result'),
-            zoomIn: document.getElementById('zoom-in'),
-            zoomOut: document.getElementById('zoom-out')
-        };
-
-        // Initialisation des améliorations
-        function initUpgrades() {
-            const upgrades = ['power', 'defense', 'production', 'range'];
-            
-            upgrades.forEach(upgrade => {
-                const element = document.getElementById(`upgrade-${upgrade}`);
-                const costElement = document.getElementById(`${upgrade}-cost`);
-                const progressElement = document.getElementById(`${upgrade}-progress`);
-                
-                element.addEventListener('click', () => purchaseUpgrade(upgrade));
-                
-                // Mettre à jour l'affichage initial
-                updateUpgradeDisplay(upgrade);
-            });
+class StorageSystem : public RobotComponent {
+private:
+    ResourceBundle m_capacity;
+    ResourceBundle m_stored;
+    
+public:
+    StorageSystem(const string& name, const ResourceBundle& capacity) 
+        : RobotComponent(name), m_capacity(capacity) {}
+    
+    void Update(float deltaTime) override {}
+    
+    bool CanStore(const ResourceBundle& resources) const {
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            if (m_stored[i] + resources[i] > m_capacity[i]) return false;
         }
+        return true;
+    }
+    
+    bool StoreResources(const ResourceBundle& resources) {
+        if (!CanStore(resources)) return false;
+        m_stored += resources;
+        return true;
+    }
+    
+    ResourceBundle WithdrawResources(const ResourceBundle& request) {
+        ResourceBundle actual;
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            actual[i] = min(request[i], m_stored[i]);
+            m_stored[i] -= actual[i];
+        }
+        return actual;
+    }
+    
+    const ResourceBundle& GetStoredResources() const { return m_stored; }
+    const ResourceBundle& GetCapacity() const { return m_capacity; }
+    float GetStoragePercent() const {
+        int totalStored = 0, totalCapacity = 0;
+        for (int i = 0; i < RESOURCE_COUNT; ++i) {
+            totalStored += m_stored[i];
+            totalCapacity += m_capacity[i];
+        }
+        return totalCapacity > 0 ? static_cast<float>(totalStored) / totalCapacity : 0.0f;
+    }
+};
 
-        // Achat d'amélioration
-        function purchaseUpgrade(type) {
-            const currentLevel = gameState.player.upgrades[type];
-            const cost = CONFIG.UPGRADE_COSTS[type][currentLevel];
+// === ROBOT INTELLIGENT AVANCÉ ===
+class AdvancedRobot {
+private:
+    string m_id;
+    string m_name;
+    float m_health = 100.0f;
+    float m_maxHealth = 100.0f;
+    bool m_isAlive = true;
+    
+    unordered_map<string, unique_ptr<RobotComponent>> m_components;
+    
+public:
+    AdvancedRobot(const string& id, const string& name, const Vector3& startPosition) 
+        : m_id(id), m_name(name) {
+        
+        // Création des systèmes de base
+        m_components["mouvement"] = make_unique<MovementSystem>("Système de Mouvement", 3.0f, 180.0f, startPosition);
+        m_components["arme"] = make_unique<WeaponSystem>("Laser Principal", 25.0f, 8.0f, 1.5f);
+        m_components["stockage"] = make_unique<StorageSystem>("Entrepôt Robot", 
+            ResourceBundle(100, 200, 50, 100, 50));
+    }
+    
+    template<typename T>
+    T* GetComponent(const string& name) {
+        auto it = m_components.find(name);
+        if (it != m_components.end()) {
+            return dynamic_cast<T*>(it->second.get());
+        }
+        return nullptr;
+    }
+    
+    void Update(float deltaTime) {
+        if (!m_isAlive) return;
+        
+        for (auto& [name, component] : m_components) {
+            component->Update(deltaTime);
+        }
+        
+        // Vérifier la santé globale
+        if (m_health <= 0) {
+            m_isAlive = false;
+            cout << "🤖 Robot " << m_name << " a été détruit!" << endl;
+        }
+    }
+    
+    void MoveTo(const Vector3& target) {
+        if (auto movement = GetComponent<MovementSystem>("mouvement")) {
+            movement->MoveTo(target);
+        }
+    }
+    
+    bool Attack(AdvancedRobot* target) {
+        if (!m_isAlive || !target->IsAlive()) return false;
+        
+        auto weapon = GetComponent<WeaponSystem>("arme");
+        auto movement = GetComponent<MovementSystem>("mouvement");
+        
+        if (weapon && movement) {
+            Vector3 myPos = movement->GetPosition();
+            Vector3 targetPos = target->GetPosition();
             
-            if (gameState.player.power >= cost && currentLevel < 5) {
-                gameState.player.power -= cost;
-                gameState.player.upgrades[type]++;
-                updateUpgradeDisplay(type);
-                updateUI();
-                showMessage(`Amélioration ${type} achetée ! Niveau ${gameState.player.upgrades[type]}`);
+            if (weapon->FireAtTarget(myPos, targetPos)) {
+                target->TakeDamage(weapon->GetDamage());
+                cout << "💥 " << m_name << " attaque " << target->GetName() << " pour " << weapon->GetDamage() << " dégâts!" << endl;
+                return true;
             }
         }
-
-        // Mise à jour de l'affichage des améliorations
-        function updateUpgradeDisplay(type) {
-            const currentLevel = gameState.player.upgrades[type];
-            const costElement = document.getElementById(`${type}-cost`);
-            const progressElement = document.getElementById(`${type}-progress`);
-            
-            if (currentLevel < 5) {
-                costElement.textContent = CONFIG.UPGRADE_COSTS[type][currentLevel];
-            } else {
-                costElement.textContent = "MAX";
-                document.getElementById(`upgrade-${type}`).classList.add('disabled');
-            }
-            
-            progressElement.style.width = `${currentLevel * 20}%`;
+        return false;
+    }
+    
+    void TakeDamage(float damage) {
+        m_health = max(0.0f, m_health - damage);
+    }
+    
+    void Repair(float amount) {
+        m_health = min(m_maxHealth, m_health + amount);
+        for (auto& [name, component] : m_components) {
+            component->Repair(amount);
         }
-
-        // Initialisation du plateau de jeu
-        function initGameBoard() {
-            elements.gameBoard.innerHTML = '';
-            elements.gameBoard.style.width = `${CONFIG.BOARD_SIZE * CONFIG.CELL_SIZE}px`;
-            elements.gameBoard.style.height = `${CONFIG.BOARD_SIZE * CONFIG.CELL_SIZE}px`;
-            
-            gameState.territories = [];
-            
-            for (let y = 0; y < CONFIG.BOARD_SIZE; y++) {
-                for (let x = 0; x < CONFIG.BOARD_SIZE; x++) {
-                    const cell = document.createElement('div');
-                    cell.className = 'territory-cell';
-                    cell.style.width = `${CONFIG.CELL_SIZE}px`;
-                    cell.style.height = `${CONFIG.CELL_SIZE}px`;
-                    cell.style.left = `${x * CONFIG.CELL_SIZE}px`;
-                    cell.style.top = `${y * CONFIG.CELL_SIZE}px`;
-                    
-                    // Initialiser comme territoire neutre
-                    const territory = {
-                        x,
-                        y,
-                        owner: -1, // -1 = neutre
-                        defense: 1,
-                        element: cell
-                    };
-                    
-                    gameState.territories.push(territory);
-                    elements.gameBoard.appendChild(cell);
-                    
-                    // Ajouter l'événement de clic
-                    cell.addEventListener('click', () => attackTerritory(territory));
-                }
-            }
-            
-            updateBoardTransform();
+    }
+    
+    // Getters
+    const string& GetId() const { return m_id; }
+    const string& GetName() const { return m_name; }
+    Vector3 GetPosition() const { 
+        if (auto movement = GetComponent<MovementSystem>("mouvement")) {
+            return movement->GetPosition();
         }
-
-        // Mise à jour de la transformation de la carte (zoom/déplacement)
-        function updateBoardTransform() {
-            elements.gameBoard.style.transform = `translate(${gameState.offsetX}px, ${gameState.offsetY}px) scale(${gameState.zoom})`;
+        return Vector3();
+    }
+    float GetHealth() const { return m_health; }
+    float GetHealthPercent() const { return m_health / m_maxHealth; }
+    bool IsAlive() const { return m_isAlive; }
+    bool IsMoving() const { 
+        if (auto movement = GetComponent<MovementSystem>("mouvement")) {
+            return movement->IsMoving();
         }
+        return false;
+    }
+    
+    string GetStatus() const {
+        stringstream ss;
+        ss << m_name << " [HP:" << static_cast<int>(m_health) << "/" << static_cast<int>(m_maxHealth) 
+           << "] Pos:" << GetPosition().ToString();
+        if (IsMoving()) ss << " [EN MOUVEMENT]";
+        if (!m_isAlive) ss << " [DÉTRUIT]";
+        return ss.str();
+    }
+};
 
-        // Initialisation des joueurs IA
-        function initAIPlayers() {
-            gameState.aiPlayers = [];
-            
-            // Créer 5 joueurs IA
-            for (let i = 0; i < 5; i++) {
-                gameState.aiPlayers.push({
-                    id: i + 1,
-                    color: CONFIG.AI_COLORS[i],
-                    power: CONFIG.INITIAL_POWER,
-                    territories: 0,
-                    upgrades: {
-                        power: 0,
-                        defense: 0,
-                        production: 0,
-                        range: 0
-                    },
-                    // Position initiale aléatoire
-                    startX: Math.floor(Math.random() * CONFIG.BOARD_SIZE),
-                    startY: Math.floor(Math.random() * CONFIG.BOARD_SIZE)
-                });
-            }
-            
-            // Donner un territoire initial à chaque IA
-            gameState.aiPlayers.forEach(ai => {
-                const startIndex = ai.startY * CONFIG.BOARD_SIZE + ai.startX;
-                if (gameState.territories[startIndex].owner === -1) {
-                    gameState.territories[startIndex].owner = ai.id;
-                    gameState.territories[startIndex].defense = 1;
-                    updateTerritoryDisplay(gameState.territories[startIndex]);
-                    ai.territories++;
-                }
-            });
-            
-            // Donner un territoire initial au joueur
-            const playerStartX = Math.floor(CONFIG.BOARD_SIZE / 2);
-            const playerStartY = Math.floor(CONFIG.BOARD_SIZE / 2);
-            const playerStartIndex = playerStartY * CONFIG.BOARD_SIZE + playerStartX;
-            
-            gameState.territories[playerStartIndex].owner = gameState.player.id;
-            gameState.territories[playerStartIndex].defense = 1;
-            updateTerritoryDisplay(gameState.territories[playerStartIndex]);
-            gameState.player.territories++;
+// === SYSTÈME DE COMBAT TACTIQUE ===
+class CombatSystem {
+private:
+    vector<AdvancedRobot*> m_combatants;
+    
+public:
+    void AddCombatant(AdvancedRobot* robot) {
+        if (robot && robot->IsAlive()) {
+            m_combatants.push_back(robot);
         }
-
-        // Mise à jour de l'affichage d'un territoire
-        function updateTerritoryDisplay(territory) {
-            if (territory.owner === -1) {
-                territory.element.style.backgroundColor = CONFIG.NEUTRAL_COLOR;
-                territory.element.classList.remove('player');
-            } else if (territory.owner === gameState.player.id) {
-                territory.element.style.backgroundColor = gameState.player.color;
-                territory.element.classList.add('player');
-            } else {
-                const ai = gameState.aiPlayers.find(p => p.id === territory.owner);
-                if (ai) {
-                    territory.element.style.backgroundColor = ai.color;
-                    territory.element.classList.remove('player');
-                }
-            }
-        }
-
-        // Attaquer un territoire
-        function attackTerritory(territory) {
-            if (!gameState.running || gameState.paused) return;
+    }
+    
+    void UpdateCombat(float deltaTime) {
+        // Combat tour par tour simplifié
+        for (size_t i = 0; i < m_combatants.size(); ++i) {
+            if (!m_combatants[i]->IsAlive()) continue;
             
-            // Vérifier si le territoire est adjacent à un territoire du joueur
-            const playerTerritories = gameState.territories.filter(t => t.owner === gameState.player.id);
-            const isAdjacent = playerTerritories.some(playerTerritory => 
-                Math.abs(playerTerritory.x - territory.x) <= 1 + gameState.player.upgrades.range && 
-                Math.abs(playerTerritory.y - territory.y) <= 1 + gameState.player.upgrades.range
-            );
-            
-            if (!isAdjacent && gameState.player.territories > 0) {
-                showMessage("Vous ne pouvez attaquer que les territoires adjacents !");
-                return;
-            }
-            
-            // Calculer le coût de l'attaque
-            const attackCost = CONFIG.BASE_ATTACK_COST + territory.defense * 5;
-            
-            if (gameState.player.power >= attackCost) {
-                gameState.player.power -= attackCost;
-                gameState.totalAttacks++;
-                
-                // Si le territoire appartient à un autre joueur, réduire sa défense d'abord
-                if (territory.owner !== -1 && territory.owner !== gameState.player.id) {
-                    territory.defense -= 1 + gameState.player.upgrades.power;
-                    
-                    if (territory.defense > 0) {
-                        // Territoire toujours défendu
-                        showMessage(`Attaque réussie ! Défense réduite à ${territory.defense}`);
-                        updateUI();
-                        return;
-                    }
-                    
-                    // Retirer le territoire du propriétaire précédent
-                    if (territory.owner > 0) {
-                        const previousOwner = gameState.aiPlayers.find(p => p.id === territory.owner);
-                        if (previousOwner) previousOwner.territories--;
+            // Trouver une cible
+            for (size_t j = 0; j < m_combatants.size(); ++j) {
+                if (i != j && m_combatants[j]->IsAlive()) {
+                    if (m_combatants[i]->Attack(m_combatants[j])) {
+                        break; // Une attaque par tour
                     }
                 }
-                
-                // Capturer le territoire
-                territory.owner = gameState.player.id;
-                territory.defense = 1 + gameState.player.upgrades.defense;
-                gameState.player.territories++;
-                gameState.territoriesCaptured++;
-                
-                updateTerritoryDisplay(territory);
-                updateUI();
-                updateLeaderboard();
-                
-                showMessage("Territoire capturé !");
-                
-                // Vérifier la condition de victoire
-                checkWinCondition();
-            } else {
-                showMessage("Puissance insuffisante pour attaquer !");
             }
         }
+        
+        // Nettoyer les robots détruits
+        m_combatants.erase(
+            remove_if(m_combatants.begin(), m_combatants.end(),
+                     [](AdvancedRobot* robot) { return !robot->IsAlive(); }),
+            m_combatants.end()
+        );
+    }
+    
+    bool IsCombatOngoing() const { return m_combatants.size() > 1; }
+    int GetAliveCount() const { 
+        return count_if(m_combatants.begin(), m_combatants.end(),
+                       [](AdvancedRobot* robot) { return robot->IsAlive(); });
+    }
+};
 
-        // Mise à jour de l'interface utilisateur
-        function updateUI() {
-            elements.territoriesCount.textContent = gameState.player.territories;
-            elements.powerCount.textContent = Math.floor(gameState.player.power);
-            elements.territoriesCaptured.textContent = gameState.territoriesCaptured;
-            elements.totalAttacks.textContent = gameState.totalAttacks;
-            elements.totalPower.textContent = Math.floor(gameState.totalPowerGenerated);
-            
-            // Mettre à jour le temps de jeu
-            const minutes = Math.floor(gameState.gameTime / 60);
-            const seconds = Math.floor(gameState.gameTime % 60);
-            elements.gameTime.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+// === MOTEUR DE JEU PRINCIPAL ===
+class NexusGameEngine {
+private:
+    GameConfig m_config;
+    atomic<bool> m_isRunning{false};
+    atomic<bool> m_isPaused{false};
+    thread m_gameThread;
+    
+    unordered_map<string, unique_ptr<AdvancedRobot>> m_robots;
+    ResourceBundle m_globalResources;
+    CombatSystem m_combatSystem;
+    
+    high_resolution_clock::time_point m_startTime;
+    float m_gameTime = 0.0f;
+    int m_frameCount = 0;
+    float m_fps = 0.0f;
+    
+    // Génération procédurale
+    mt19937 m_rng;
+    
+public:
+    NexusGameEngine() : m_rng(random_device{}()) {
+        m_globalResources = ResourceBundle(1000, 500, 200, 100, 300);
+    }
+    
+    ~NexusGameEngine() {
+        StopGame();
+    }
+    
+    bool Initialize() {
+        cout << "🎮 Initialisation de NEXUS ROBOTICS..." << endl;
+        
+        // Création des robots initiaux
+        CreateRobot("player_1", "Nexus-Prime", Vector3(0, 0, 0));
+        CreateRobot("enemy_1", "Drone-Ennemi", Vector3(15, 0, 5));
+        CreateRobot("enemy_2", "Sentinelle", Vector3(-8, 0, 12));
+        CreateRobot("ally_1", "Robot-Soutien", Vector3(5, 0, -3));
+        
+        m_startTime = high_resolution_clock::now();
+        
+        cout << "✅ Jeu initialisé avec " << m_robots.size() << " robots" << endl;
+        cout << "💰 Ressources initiales: " << m_globalResources.ToString() << endl;
+        
+        return true;
+    }
+    
+    void StartGame() {
+        if (m_isRunning) return;
+        
+        m_isRunning = true;
+        m_gameThread = thread([this]() { GameLoop(); });
+        
+        cout << "🚀 Démarrage de la boucle de jeu!" << endl;
+    }
+    
+    void StopGame() {
+        m_isRunning = false;
+        if (m_gameThread.joinable()) {
+            m_gameThread.join();
         }
-
-        // Mise à jour du classement
-        function updateLeaderboard() {
-            elements.leaderboard.innerHTML = '';
+        cout << "🛑 Jeu arrêté" << endl;
+    }
+    
+    void GameLoop() {
+        auto lastTime = high_resolution_clock::now();
+        auto lastFpsTime = lastTime;
+        int frames = 0;
+        
+        while (m_isRunning) {
+            auto currentTime = high_resolution_clock::now();
+            float deltaTime = duration<float>(currentTime - lastTime).count();
+            lastTime = currentTime;
             
-            // Créer un tableau de tous les joueurs
-            const allPlayers = [gameState.player, ...gameState.aiPlayers];
-            
-            // Trier par nombre de territoires (décroissant)
-            allPlayers.sort((a, b) => b.territories - a.territories);
-            
-            // Afficher le classement
-            allPlayers.forEach((player, index) => {
-                const item = document.createElement('div');
-                item.className = `leaderboard-item ${player.id === 0 ? 'player' : ''}`;
-                
-                const rank = document.createElement('div');
-                rank.className = 'leaderboard-rank';
-                rank.textContent = index + 1;
-                
-                const name = document.createElement('div');
-                name.className = 'leaderboard-name';
-                name.textContent = player.id === 0 ? 'VOUS' : `IA ${player.id}`;
-                name.style.color = player.color;
-                
-                const score = document.createElement('div');
-                score.className = 'leaderboard-score';
-                score.textContent = player.territories;
-                
-                item.appendChild(rank);
-                item.appendChild(name);
-                item.appendChild(score);
-                
-                elements.leaderboard.appendChild(item);
-                
-                // Mettre à jour le rang du joueur
-                if (player.id === 0) {
-                    elements.rank.textContent = index + 1;
-                }
-            });
-        }
-
-        // Affichage d'un message temporaire
-        function showMessage(text) {
-            elements.gameMessages.textContent = text;
-            elements.gameMessages.style.opacity = 1;
-            
-            setTimeout(() => {
-                elements.gameMessages.style.opacity = 0;
-            }, 3000);
-        }
-
-        // Vérification des conditions de victoire/défaite
-        function checkWinCondition() {
-            const totalTerritories = CONFIG.BOARD_SIZE * CONFIG.BOARD_SIZE;
-            
-            // Si le joueur contrôle plus de 70% des territoires
-            if (gameState.player.territories / totalTerritories > 0.7) {
-                endGame(true);
-                return;
+            if (!m_isPaused) {
+                UpdateGame(deltaTime);
             }
             
-            // Si le joueur n'a plus de territoires
-            if (gameState.player.territories === 0) {
-                endGame(false);
-                return;
+            // Calcul FPS
+            frames++;
+            if (duration<float>(currentTime - lastFpsTime).count() >= 1.0f) {
+                m_fps = frames;
+                frames = 0;
+                lastFpsTime = currentTime;
+                
+                // Afficher les stats toutes les 5 secondes
+                static int fpsCounter = 0;
+                if (++fpsCounter >= 5) {
+                    DisplayGameStatus();
+                    fpsCounter = 0;
+                }
             }
             
-            // Si une IA contrôle plus de 70% des territoires
-            for (const ai of gameState.aiPlayers) {
-                if (ai.territories / totalTerritories > 0.7) {
-                    endGame(false);
-                    return;
-                }
+            // Limitation FPS
+            this_thread::sleep_for(milliseconds(8)); // ~120 FPS max
+        }
+    }
+    
+    void UpdateGame(float deltaTime) {
+        m_gameTime += deltaTime;
+        m_frameCount++;
+        
+        // Mettre à jour tous les robots
+        for (auto& [id, robot] : m_robots) {
+            robot->Update(deltaTime);
+        }
+        
+        // Gestion du combat
+        UpdateCombat(deltaTime);
+        
+        // Événements aléatoires
+        if (m_frameCount % 300 == 0) { // Toutes les 5 secondes environ
+            GenerateRandomEvent();
+        }
+        
+        // Régénération des ressources
+        if (m_frameCount % 600 == 0) { // Toutes les 10 secondes
+            GenerateResources();
+        }
+    }
+    
+    void UpdateCombat(float deltaTime) {
+        // Réinitialiser le système de combat
+        static CombatSystem currentCombat;
+        currentCombat = CombatSystem();
+        
+        // Ajouter tous les robots vivants au combat
+        for (auto& [id, robot] : m_robots) {
+            if (robot->IsAlive()) {
+                currentCombat.AddCombatant(robot.get());
             }
         }
-
-        // Fin de partie
-        function endGame(isVictory) {
-            gameState.running = false;
-            
-            elements.finalTerritories.textContent = gameState.player.territories;
-            elements.finalTime.textContent = elements.gameTime.textContent;
-            elements.gameResult.textContent = isVictory ? "Félicitations ! Vous avez gagné !" : "Dommage ! Vous avez perdu.";
-            
-            elements.gameOverModal.classList.add('active');
+        
+        // Mettre à jour le combat
+        currentCombat.UpdateCombat(deltaTime);
+    }
+    
+    AdvancedRobot* CreateRobot(const string& id, const string& name, const Vector3& position) {
+        auto robot = make_unique<AdvancedRobot>(id, name, position);
+        AdvancedRobot* ptr = robot.get();
+        m_robots[id] = move(robot);
+        return ptr;
+    }
+    
+    void GenerateRandomEvent() {
+        uniform_int_distribution<> eventDist(1, 100);
+        int eventType = eventDist(m_rng);
+        
+        if (eventType <= 15) { // 15% de chance
+            cout << "🌟 ÉVÉNEMENT: Découverte de cristaux énergétiques! +50 Énergie" << endl;
+            m_globalResources.Energy() += 50;
         }
-
-        // Logique des IA
-        function updateAI() {
-            gameState.aiPlayers.forEach(ai => {
-                // Générer de la puissance
-                ai.power += CONFIG.POWER_GAIN_RATE * (1 + ai.upgrades.production) * ai.territories / 10;
-                
-                // Acheter des améliorations occasionnellement
-                if (Math.random() < 0.01) {
-                    const upgradeTypes = ['power', 'defense', 'production', 'range'];
-                    const randomUpgrade = upgradeTypes[Math.floor(Math.random() * upgradeTypes.length)];
-                    
-                    if (ai.upgrades[randomUpgrade] < 5 && ai.power >= CONFIG.UPGRADE_COSTS[randomUpgrade][ai.upgrades[randomUpgrade]]) {
-                        ai.power -= CONFIG.UPGRADE_COSTS[randomUpgrade][ai.upgrades[randomUpgrade]];
-                        ai.upgrades[randomUpgrade]++;
-                    }
-                }
-                
-                // Attaquer des territoires
-                const aiTerritories = gameState.territories.filter(t => t.owner === ai.id);
-                
-                if (aiTerritories.length > 0 && ai.power > 20) {
-                    // Choisir un territoire adjacent à attaquer
-                    const attackCandidates = [];
-                    
-                    aiTerritories.forEach(territory => {
-                        for (let y = territory.y - 1 - ai.upgrades.range; y <= territory.y + 1 + ai.upgrades.range; y++) {
-                            for (let x = territory.x - 1 - ai.upgrades.range; x <= territory.x + 1 + ai.upgrades.range; x++) {
-                                if (x >= 0 && x < CONFIG.BOARD_SIZE && y >= 0 && y < CONFIG.BOARD_SIZE) {
-                                    const targetIndex = y * CONFIG.BOARD_SIZE + x;
-                                    const target = gameState.territories[targetIndex];
-                                    
-                                    if (target.owner !== ai.id) {
-                                        attackCandidates.push(target);
-                                    }
-                                }
-                            }
-                        }
-                    });
-                    
-                    if (attackCandidates.length > 0) {
-                        const randomTarget = attackCandidates[Math.floor(Math.random() * attackCandidates.length)];
-                        const attackCost = CONFIG.BASE_ATTACK_COST + randomTarget.defense * 5;
-                        
-                        if (ai.power >= attackCost) {
-                            ai.power -= attackCost;
-                            
-                            // Si le territoire appartient à un autre joueur, réduire sa défense d'abord
-                            if (randomTarget.owner !== -1 && randomTarget.owner !== ai.id) {
-                                randomTarget.defense -= 1 + ai.upgrades.power;
-                                
-                                if (randomTarget.defense > 0) {
-                                    return;
-                                }
-                                
-                                // Retirer le territoire du propriétaire précédent
-                                if (randomTarget.owner === 0) {
-                                    gameState.player.territories--;
-                                } else {
-                                    const previousOwner = gameState.aiPlayers.find(p => p.id === randomTarget.owner);
-                                    if (previousOwner) previousOwner.territories--;
-                                }
-                            }
-                            
-                            // Capturer le territoire
-                            randomTarget.owner = ai.id;
-                            randomTarget.defense = 1 + ai.upgrades.defense;
-                            ai.territories++;
-                            
-                            updateTerritoryDisplay(randomTarget);
-                        }
-                    }
-                }
-            });
+        else if (eventType <= 25) { // 10% de chance
+            cout << "⚡ ÉVÉNEMENT: Tempête magnétique! Robots légèrement endommagés" << endl;
+            for (auto& [id, robot] : m_robots) {
+                robot->TakeDamage(5.0f);
+            }
         }
-
-        // Gestion du zoom
-        function setupZoomControls() {
-            elements.zoomIn.addEventListener('click', () => {
-                gameState.zoom = Math.min(gameState.zoom + 0.2, 3);
-                updateBoardTransform();
-            });
-            
-            elements.zoomOut.addEventListener('click', () => {
-                gameState.zoom = Math.max(gameState.zoom - 0.2, 0.5);
-                updateBoardTransform();
-            });
-            
-            // Zoom avec la molette de la souris
-            elements.gameBoardContainer.addEventListener('wheel', (e) => {
-                e.preventDefault();
-                const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-                gameState.zoom = Math.max(0.5, Math.min(3, gameState.zoom * zoomFactor));
-                updateBoardTransform();
-            });
-            
-            // Déplacement de la carte
-            elements.gameBoardContainer.addEventListener('mousedown', (e) => {
-                if (e.button === 2) { // Clic droit
-                    e.preventDefault();
-                    gameState.isDragging = true;
-                    gameState.lastMouseX = e.clientX;
-                    gameState.lastMouseY = e.clientY;
-                }
-            });
-            
-            document.addEventListener('mousemove', (e) => {
-                if (gameState.isDragging) {
-                    const deltaX = e.clientX - gameState.lastMouseX;
-                    const deltaY = e.clientY - gameState.lastMouseY;
-                    
-                    gameState.offsetX += deltaX;
-                    gameState.offsetY += deltaY;
-                    
-                    gameState.lastMouseX = e.clientX;
-                    gameState.lastMouseY = e.clientY;
-                    
-                    updateBoardTransform();
-                }
-            });
-            
-            document.addEventListener('mouseup', () => {
-                gameState.isDragging = false;
-            });
-            
-            // Empêcher le menu contextuel
-            elements.gameBoardContainer.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-            });
+        else if (eventType <= 30) { // 5% de chance
+            cout << "🤖 ÉVÉNEMENT: Nouveau robot découvert!" << endl;
+            string newId = "drone_" + to_string(m_robots.size() + 1);
+            CreateRobot(newId, "Drone Autonome", Vector3(rand() % 20 - 10, 0, rand() % 20 - 10));
         }
-
-        // Boucle de jeu principale
-        function gameLoop() {
-            if (!gameState.running || gameState.paused) return;
-            
-            // Mettre à jour le temps de jeu
-            gameState.gameTime += 0.1;
-            
-            // Générer de la puissance pour le joueur
-            const powerGain = CONFIG.POWER_GAIN_RATE * (1 + gameState.player.upgrades.production) * gameState.player.territories / 10;
-            gameState.player.power += powerGain;
-            gameState.totalPowerGenerated += powerGain;
-            
-            // Mettre à jour les IA
-            updateAI();
-            
-            // Mettre à jour l'interface
-            updateUI();
-            updateLeaderboard();
-            
-            // Vérifier les conditions de fin de partie
-            checkWinCondition();
+    }
+    
+    void GenerateResources() {
+        // Génération passive de ressources
+        ResourceBundle passiveIncome(20, 10, 5, 3, 8);
+        m_globalResources += passiveIncome;
+    }
+    
+    void DisplayGameStatus() {
+        cout << "\n=== ÉTAT DU JEU ===" << endl;
+        cout << "⏱️ Temps: " << static_cast<int>(m_gameTime) << "s | FPS: " << m_fps << endl;
+        cout << "💰 Ressources: " << m_globalResources.ToString() << endl;
+        cout << "🤖 Robots actifs:" << endl;
+        
+        int aliveCount = 0;
+        for (auto& [id, robot] : m_robots) {
+            if (robot->IsAlive()) {
+                cout << "   " << robot->GetStatus() << endl;
+                aliveCount++;
+            }
         }
-
-        // Démarrer le jeu
-        function startGame() {
-            gameState.running = true;
-            gameState.paused = false;
-            gameState.gameTime = 0;
-            gameState.territoriesCaptured = 0;
-            gameState.totalAttacks = 0;
-            gameState.totalPowerGenerated = 0;
-            gameState.zoom = 1;
-            gameState.offsetX = 0;
-            gameState.offsetY = 0;
-            
-            // Réinitialiser le joueur
-            gameState.player.power = CONFIG.INITIAL_POWER;
-            gameState.player.territories = 0;
-            gameState.player.upgrades = {
-                power: 0,
-                defense: 0,
-                production: 0,
-                range: 0
-            };
-            
-            // Réinitialiser les améliorations
-            initUpgrades();
-            
-            // Initialiser le plateau
-            initGameBoard();
-            initAIPlayers();
-            
-            // Mettre à jour l'interface
-            updateUI();
-            updateLeaderboard();
-            
-            // Cacher les modales
-            elements.startModal.classList.remove('active');
-            elements.pauseModal.classList.remove('active');
-            elements.gameOverModal.classList.remove('active');
-            
-            // Démarrer la boucle de jeu
-            setInterval(gameLoop, 100);
+        cout << "Total: " << aliveCount << "/" << m_robots.size() << " robots en vie" << endl;
+    }
+    
+    // Commandes de jeu
+    void CommandRobot(const string& robotId, const Vector3& target) {
+        auto it = m_robots.find(robotId);
+        if (it != m_robots.end() && it->second->IsAlive()) {
+            it->second->MoveTo(target);
+            cout << "📢 Commande: " << it->second->GetName() << " → " << target.ToString() << endl;
         }
-
-        // Gestion des événements
-        function setupEventListeners() {
-            // Boutons de contrôle
-            elements.pauseBtn.addEventListener('click', () => {
-                if (gameState.running) {
-                    gameState.paused = !gameState.paused;
-                    elements.pauseBtn.textContent = gameState.paused ? 'REPRENDRE' : 'PAUSE';
-                    
-                    if (gameState.paused) {
-                        elements.pauseModal.classList.add('active');
-                    } else {
-                        elements.pauseModal.classList.remove('active');
-                    }
-                }
-            });
-            
-            elements.restartBtn.addEventListener('click', () => {
-                if (confirm("Êtes-vous sûr de vouloir recommencer ?")) {
-                    startGame();
-                }
-            });
-            
-            elements.helpBtn.addEventListener('click', () => {
-                alert("TERRITORIAL CONQUEST\n\n- Cliquez sur les territoires adjacents pour les conquérir\n- Chaque territoire vous rapporte de la puissance\n- Utilisez votre puissance pour acheter des améliorations\n- Conquérez plus de 70% de la carte pour gagner !\n\nContrôles :\n- Clic gauche : Attaquer un territoire\n- Molette : Zoomer\n- Clic droit + glisser : Déplacer la carte");
-            });
-            
-            // Boutons des modales
-            elements.startBtn.addEventListener('click', startGame);
-            elements.resumeBtn.addEventListener('click', () => {
-                gameState.paused = false;
-                elements.pauseModal.classList.remove('active');
-                elements.pauseBtn.textContent = 'PAUSE';
-            });
-            
-            elements.menuBtn.addEventListener('click', () => {
-                gameState.running = false;
-                elements.pauseModal.classList.remove('active');
-                elements.startModal.classList.add('active');
-            });
-            
-            elements.playAgainBtn.addEventListener('click', startGame);
-            elements.mainMenuBtn.addEventListener('click', () => {
-                elements.gameOverModal.classList.remove('active');
-                elements.startModal.classList.add('active');
-            });
+    }
+    
+    void RepairRobot(const string& robotId) {
+        auto it = m_robots.find(robotId);
+        if (it != m_robots.end() && m_globalResources.Energy() >= 20) {
+            it->second->Repair(25.0f);
+            m_globalResources.Energy() -= 20;
+            cout << "🔧 Réparation: " << it->second->GetName() << " (+25 HP)" << endl;
         }
-
-        // Initialisation du jeu
-        function init() {
-            setupEventListeners();
-            setupZoomControls();
-            initUpgrades();
-            initGameBoard();
-            updateLeaderboard();
+    }
+    
+    // Getters
+    vector<string> GetRobotIds() const {
+        vector<string> ids;
+        for (const auto& [id, robot] : m_robots) {
+            ids.push_back(id);
         }
+        return ids;
+    }
+    
+    AdvancedRobot* GetRobot(const string& id) {
+        auto it = m_robots.find(id);
+        return it != m_robots.end() ? it->second.get() : nullptr;
+    }
+    
+    void TogglePause() { 
+        m_isPaused = !m_isPaused; 
+        cout << (m_isPaused ? "⏸️ Jeu en pause" : "▶️ Jeu repris") << endl;
+    }
+};
 
-        // Démarrer l'initialisation quand la page est chargée
-        window.addEventListener('load', init);
-    </script>
-</body>
-</html>
+// === PROGRAMME PRINCIPAL ===
+int main() {
+    cout << "🎯 NEXUS ROBOTICS - Jeu de Stratégie Robotique Ultime 🎯" << endl;
+    cout << "========================================================" << endl;
+    
+    NexusGameEngine game;
+    
+    if (!game.Initialize()) {
+        cerr << "❌ Échec de l'initialisation du jeu!" << endl;
+        return 1;
+    }
+    
+    game.StartGame();
+    
+    // Simulation d'une partie avec commandes
+    cout << "\n>>> Début de la simulation de gameplay..." << endl;
+    
+    // Commandes de démonstration
+    this_thread::sleep_for(seconds(2));
+    game.CommandRobot("player_1", Vector3(10, 0, 8));
+    
+    this_thread::sleep_for(seconds(3));
+    game.CommandRobot("ally_1", Vector3(-5, 0, 15));
+    
+    this_thread::sleep_for(seconds(4));
+    game.RepairRobot("player_1");
+    
+    this_thread::sleep_for(seconds(2));
+    game.TogglePause();
+    
+    this_thread::sleep_for(seconds(2));
+    game.TogglePause();
+    
+    // Laisser le jeu tourner 45 secondes
+    this_thread::sleep_for(seconds(45));
+    
+    game.StopGame();
+    
+    cout << "\n========================================================" << endl;
+    cout << "🎉 Simulation terminée! Merci d'avoir joué à NEXUS ROBOTICS!" << endl;
+    
+    return 0;
+}
